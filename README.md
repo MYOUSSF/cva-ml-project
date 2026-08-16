@@ -1,10 +1,10 @@
 # Counterparty Credit Risk (CVA): An ML Portfolio Project
 
-**Problem statement:** I'm building a system that estimates counterparty credit
+I'm building a system that estimates counterparty credit
 risk (CVA) by combining a default-probability classifier, a Monte-Carlo-based
 exposure simulator, and a deep-learning-accelerated pricer.
 
-This is framed as an ML project applied to finance, not a finance project with
+This is is an ML project applied to finance, not a finance project with
 ML sprinkled in. Every phase below is a standard ML problem type -
 classification, regression, time-series estimation, deep learning - with the
 finance content as the applied domain, not the organizing structure.
@@ -48,8 +48,6 @@ See [Methodology](#methodology) below for the full per-phase writeup and
 
 ## Methodology
 
-See [cva_ds_ml_project_plan.md](cva_ds_ml_project_plan.md) for the full
-original plan, including per-phase kickoff prompts (Section 17).
 
 ### Phase 1 - Data engineering
 
@@ -595,12 +593,6 @@ base 10-phase pipeline above. Each reuses the base pipeline's existing
 models rather than reimplementing them (Merton's solved `V`/`sigma_V`,
 the Hull-White simulation machinery, `analytic_swap_value`, the FRED
 ingestion helper) -- these are extensions, not a second project.
-
-Two extensions from the original pack (real Fed stress-test scenarios,
-NLP-augmented PD signal) were deliberately deferred -- both need scraping
-specific external documents (a Fed-published PDF, SEC EDGAR full-text
-search) whose format can't be guaranteed stable, and are a reasonable
-follow-up once those sources are confirmed to parse cleanly end-to-end.
 
 ### Bootstrapped CVA confidence interval
 
