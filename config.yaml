@@ -1,0 +1,61 @@
+# Config-driven entry point (Phase 10) so the pipeline can be rerun for a
+# different valuation date or company panel without editing source.
+
+valuation_date: "2026-08-15"
+
+fred:
+  series_ids: ["DGS1MO", "DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS5", "DGS10", "DGS20", "DGS30", "SOFR"]
+
+company_panel:
+  # Spans investment-grade to stressed credit, across sectors, so Phase 2's
+  # Merton PD and Phase 2b's classifier have something to rank-order.
+  tickers:
+    - AAPL  # tech, high quality
+    - MSFT  # tech, high quality
+    - JNJ   # healthcare, high quality
+    - KO    # consumer staples, high quality
+    - XOM   # energy, high quality
+    - T     # telecom, higher leverage
+    - F     # autos, lower credit quality
+    - CCL   # travel/leisure, higher leverage post-2020
+    - BA    # industrials, stressed credit
+    - AMC   # entertainment, high-risk/high-leverage
+
+merton:
+  horizon_years: 1.0  # standard 1-year Merton horizon; r is interpolated from the FRED curve at this maturity
+
+hull_white:
+  short_rate_series: "SOFR"  # historical daily short-rate series used for the AR(1) calibration
+  n_sim_paths: 1000
+  sim_horizon_years: 5.0
+
+swap:
+  notional: 10000000
+  fixed_rate: 0.039217  # par/at-the-money rate as of valuation_date, from the Hull-White-priced curve (value ~0 at inception)
+  tenor_years: 5
+  payment_frequency: "semiannual"
+  n_exposure_paths: 5000  # Phase 4/5: paths simulated for the exposure training dataset
+
+lgd:
+  # 40% recovery / 60% LGD: the ISDA CDS Standard Model convention for
+  # senior unsecured claims (adopted in the 2009 "Big Bang" protocol),
+  # consistent with Moody's long-run historical average senior-unsecured
+  # corporate recovery (~37-40%). A standard market assumption, not a
+  # company-specific estimate -- appropriate for this exercise's scope.
+  recovery_rate: 0.40
+
+pinn:
+  bond_maturity_years: 5.0  # matches the swap tenor
+  r_range: [-0.06, 0.15]    # covers Phase 4's simulated short-rate range (~-0.04 to 0.12) with margin
+  n_epochs: 3000
+
+cva:
+  # AMC chosen deliberately: it's the only Phase 1/2 panel name with a
+  # non-negligible Merton PD (see Phase 2's README section) -- every
+  # investment-grade name in the panel collapses to a PD near 1e-40 or
+  # smaller under plain Merton with physical-measure inputs, which would
+  # make the sensitivity analysis below trivially uninteresting (CVA
+  # staying near $0 under every shock).
+  counterparty_ticker: "AMC"
+  pd_shock_multipliers: [0.5, 1.0, 1.5, 2.0]
+  recovery_rate_shocks: [0.20, 0.40, 0.60]

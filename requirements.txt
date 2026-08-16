@@ -1,0 +1,20 @@
+numpy
+pandas
+scipy
+scikit-learn
+xgboost
+lightgbm
+torch
+matplotlib
+seaborn
+yfinance
+requests
+pyyaml
+pytest
+streamlit
+
+# Optional (Phase 10 stretch goals, not built)
+# optuna
+# shap
+# fastapi
+# uvicorn
