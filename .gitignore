@@ -10,6 +10,8 @@ data/processed/*
 !data/processed/.gitkeep
 outputs/*
 !outputs/.gitkeep
+project_plan.md
+extensions_pack.md
 
 .DS_Store
 *.egg-info/

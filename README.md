@@ -22,9 +22,12 @@ finance content as the applied domain, not the organizing structure.
 
 ## Results
 
-All 10 phases are implemented, tested (57 pytest tests, all offline except
+All 10 phases are implemented, tested (90 pytest tests, all offline except
 the live-data ingestion functions), and runnable end-to-end via
-`config.yaml`. Headline numbers from the current run (valuation date
+`config.yaml`. A risk-focused extension pack (bootstrapped CVA confidence
+interval, wrong-way risk, external spread benchmarking, MRM documentation
+-- see [Risk-focused extensions](#risk-focused-extensions)) builds on top
+of the base pipeline. Headline numbers from the current run (valuation date
 2026-08-15):
 
 | Phase | Result |
@@ -585,6 +588,156 @@ Writes `data/processed/portfolio_application_<date>.csv` and
   classifier exists to close, if it could be applied to this same company
   universe (it can't - see Phase 2b's documented limitation).
 
+## Risk-focused extensions
+
+Four extensions from `cva_risk_extensions_pack.md`, built on top of the
+base 10-phase pipeline above. Each reuses the base pipeline's existing
+models rather than reimplementing them (Merton's solved `V`/`sigma_V`,
+the Hull-White simulation machinery, `analytic_swap_value`, the FRED
+ingestion helper) -- these are extensions, not a second project.
+
+Two extensions from the original pack (real Fed stress-test scenarios,
+NLP-augmented PD signal) were deliberately deferred -- both need scraping
+specific external documents (a Fed-published PDF, SEC EDGAR full-text
+search) whose format can't be guaranteed stable, and are a reasonable
+follow-up once those sources are confirmed to parse cleanly end-to-end.
+
+### Bootstrapped CVA confidence interval
+
+`src/cva_uncertainty.py` propagates uncertainty from three sources through
+to a CVA *distribution* instead of a single point number: the Monte Carlo
+exposure simulation itself (resample whole simulated paths, preserving the
+fact that one Hull-White draw determines a path's value at every
+checkpoint jointly), the Merton PD estimate's own sampling uncertainty
+(bootstrap the trailing daily equity log returns behind `sigma_E`,
+re-solve Merton), and LGD (drawn from a triangular distribution over the
+published plausible recovery-rate range, not held at a single point
+value).
+
+Run it with:
+
+```bash
+python -m src.cva_uncertainty
+```
+
+**Validation implemented:** an explicit ablation check that each source
+actually injects variance -- turning all three off collapses the
+distribution to exactly zero standard deviation (asserted in code), and
+each source turned on alone is confirmed to have positive standard
+deviation. This directly targets the pack's documented pitfall: a
+bootstrap that resamples a seed without actually varying PD/LGD produces
+an interval that looks precise without being meaningful.
+
+**Results on the current run (AMC, 500 iterations):** mean **$28,941**,
+median $27,551 (tracks Phase 7's naive-EE CVA of $26,907 reasonably
+closely, as expected -- the resampling here mirrors naive's own
+floor-then-average estimator), 90% interval **[$14,046, $47,611]**. The
+PD-resampling source dominates the interval's width (std $9,864 alone,
+vs. $10,469 combined) -- Merton's well-documented tail sensitivity
+(Merton memo, Section 6) shows up here as the largest contributor to CVA
+*uncertainty*, not just to the point estimate's known magnitude issue.
+Path-resampling alone contributes comparatively little (std $495) at this
+notional/path-count.
+
+### Wrong-way risk (Gaussian copula)
+
+`src/wrong_way_risk.py` links the counterparty's simulated Merton
+asset-value process to the same Hull-White short-rate path driving
+exposure, via a single Cholesky-correlated pair of standard normal shocks
+per simulation step. Default is assessed by discrete monitoring at the
+swap's own payment-date checkpoints (`V(t_k) < D`) -- the same checkpoint
+grid `exposure_models.py` already uses, sidestepping a full continuous
+first-passage model. `V0`/`sigma_V` are the counterparty's own Phase 2
+solved Merton values, not a separately-fit process.
+
+**Correlation parameter:** rather than an arbitrary or sector-level
+number, `rho` is the historical realized correlation between the
+counterparty's own daily equity log returns and daily SOFR changes, over
+the same trailing window Phase 1 uses for `equity_vol` -- directly
+computable from data already in this project.
+
+Run it with:
+
+```bash
+python -m src.wrong_way_risk
+```
+
+**Validation implemented:** the pack's explicit ask -- confirm the
+direction of the effect makes sense given the swap's structure and the
+correlation's sign. For this project's receive-fixed/pay-floating swap
+(value rises when rates fall), positive `rho` means low-rate/high-exposure
+paths coincide with low-asset-value/default-likely paths -- the classic
+wrong-way setup -- and negative `rho` is the right-way case. Checked with
+an offline test using extreme synthetic `rho = +-0.8` on a hand-built
+setup (`tests/test_wrong_way_risk.py`), confirming `CVA(rho=+0.8) >
+CVA(rho=-0.8)`, not just asserted from the formula.
+
+**Results on the current run (AMC):** the historical `rho` between AMC's
+equity returns and SOFR changes comes out to **+0.014** -- essentially
+zero, giving a **+2.3%** uplift (CVA $35,587 to $36,406). This is a
+genuinely small effect, and it's directly consistent with something this
+project's own Limitations section already said before this extension was
+built: "AMC \[has\] no obvious economic link between rates and its own
+default risk." The mechanism validates correctly (direction check passes,
+uplift sign matches `rho`'s sign); it's simply the case that AMC's own
+data doesn't support a large wrong-way effect. Note the discrete-
+monitoring cumulative default probability (~43% over the 5y horizon) runs
+well above Phase 2's 1-year terminal-only Merton PD (6.8%) by
+construction -- a cumulative, discretely-monitored probability over 5
+years is not directly comparable to a single-horizon terminal-only number,
+and the gap is the expected, documented consequence of that different
+default-timing mechanism (see the module docstring), not a
+recalibration of Phase 2's PD.
+
+### External benchmarking vs. market spreads
+
+`src/spread_benchmark.py` compares each panel company's PD x LGD implied
+spread against FRED's free ICE BofA rating-bucket corporate OAS series
+(AAA through CCC-and-lower), as an external sanity check independent of
+this project's own models.
+
+Run it with:
+
+```bash
+python -m src.spread_benchmark
+```
+
+**Validation implemented:** a completeness check
+(`test_every_approximate_credit_rating_maps_to_a_known_fred_series`) that
+every rating in `APPROXIMATE_CREDIT_RATINGS` maps to a bucket actually
+present in `FRED_OAS_SERIES` -- the same class of guard `test_cva.py`
+already has for the ratings-rank table, since a typo'd bucket here would
+silently drop a company from the comparison rather than erroring.
+
+**Results on the current run:** market OAS by bucket comes out
+monotonically increasing with credit risk as expected (AAA 41bps, AA
+58bps, A 66bps, BBB 98bps, BB 160bps, B 288bps, CCC-and-lower 1,024bps),
+confirming the series IDs are correctly mapped. Every investment-grade
+name's model-implied spread collapses to near-zero (the same Merton-PD-
+collapse finding from Phase 2, now externally quantified rather than just
+qualitatively caveated): AAPL implies ~6e-70 bps against a market 58bps,
+a gap of -58bps. AMC, the panel's one high-PD name, still understates the
+market by -618bps (model 406bps vs. market 1,024bps) -- consistent with
+Merton-with-physical-measure-inputs systematically underpricing credit
+risk relative to the market's risk-neutral pricing (which also embeds a
+risk premium Merton's physical-measure PD doesn't), not a new finding but
+now measured in the same units the market actually trades in.
+
+### Model Risk Management (MRM) documentation
+
+`docs/model_validation/` -- one SR-11-7-structured validation memo per
+model (Merton PD baseline, supervised PD classifier, Hull-White
+calibration, exposure regression models, PINN pricer), plus
+[`model_inventory.md`](docs/model_validation/model_inventory.md)
+summarizing all five with their production-path status and materiality
+tier. Written to engage with each model's *specific* documented
+weaknesses (Ford's stale-debt PD, the daily-AR(1) lag-1-autocorrelation
+finding, the MLP target-scaling bug, etc.) rather than restating generic
+SR 11-7 language -- and, notably, two of the five models (the supervised
+PD classifier, the PINN pricer) are found to carry **zero materiality** to
+this project's actual reported CVA numbers, stated as an explicit,
+load-bearing finding rather than glossed over.
+
 ## Repository structure
 
 ```
@@ -599,6 +752,11 @@ src/
   exposure_models.py      # Phase 4/5: EE(t) regression model comparison
   cva.py                  # Phase 6/7/9: LGD + CVA assembly + sensitivity + portfolio application
   pinn.py                 # Phase 8: PINN fast pricer
+  cva_uncertainty.py      # Extension: bootstrapped CVA confidence interval
+  wrong_way_risk.py       # Extension: wrong-way risk via Gaussian copula
+  spread_benchmark.py     # Extension: external benchmarking vs. FRED OAS spreads
+docs/
+  model_validation/       # Extension: MRM validation memos, one per model + inventory
 notebooks/                # exploratory analysis, results walkthroughs
 tests/                    # pytest unit tests on core functions
 outputs/                  # saved charts, tables, model artifacts (gitignored)
@@ -613,7 +771,7 @@ requirements.txt
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pytest              # 57 tests, ~5s, all offline
+pytest              # 90 tests, ~7s, all offline
 ```
 
 Run the full pipeline end to end (each step reads the previous steps'
@@ -627,6 +785,16 @@ python -m src.ratemodel        # Phase 3: Hull-White calibration
 python -m src.exposure_models  # Phase 4 + 5: synthetic exposure data + model comparison
 python -m src.cva              # Phase 6 + 7 + 9: LGD, CVA assembly, portfolio application
 python -m src.pinn             # Phase 8: PINN pricer (independent of the CVA chain)
+```
+
+Then, optionally, the risk-focused extensions (each reads Phase 1-3's
+saved outputs; `cva_uncertainty` and `wrong_way_risk` also need Phase 4's
+exposure training data and the raw equity history Phase 1 caches):
+
+```bash
+python -m src.cva_uncertainty  # Extension: bootstrapped CVA confidence interval
+python -m src.wrong_way_risk   # Extension: wrong-way risk via Gaussian copula
+python -m src.spread_benchmark # Extension: external benchmarking vs. FRED OAS spreads
 ```
 
 All of it is config-driven (`config.yaml`): valuation date, company panel,
@@ -661,6 +829,12 @@ pipeline, not a second implementation of it.
 - [x] Phase 9 - Portfolio-level application across the company panel
 - [x] Phase 10 - Tests, config-driven pipeline, DS-facing README
 - [x] Phase 10 (optional stretch) - Streamlit demo app (`app.py`)
+- [x] Extension - Bootstrapped CVA confidence interval (`src/cva_uncertainty.py`)
+- [x] Extension - Wrong-way risk via Gaussian copula (`src/wrong_way_risk.py`)
+- [x] Extension - External benchmarking vs. FRED market spreads (`src/spread_benchmark.py`)
+- [x] Extension - MRM validation memos (`docs/model_validation/`)
+- [ ] Extension - Real Fed stress-test scenarios (deferred, see [Risk-focused extensions](#risk-focused-extensions))
+- [ ] Extension - NLP-augmented PD signal (deferred, see [Risk-focused extensions](#risk-focused-extensions))
 
 ## Limitations
 
@@ -738,10 +912,3 @@ summary of what to not over-trust in these numbers.
   methodological (a validated recipe), not a demonstrated speed or
   accuracy advantage over the closed form.
 
-**General:**
-- The 10-ticker company panel is small and hand-picked for credit-quality
-  spread, not randomly sampled - fine for illustrating the methodology,
-  not for drawing statistical conclusions about "companies in general."
-- Approximate credit ratings used in Phase 9 are from general knowledge,
-  not a live agency pull - verify independently before relying on them for
-  anything beyond the rank-order sanity check they're used for here.

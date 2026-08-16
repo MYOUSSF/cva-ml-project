@@ -170,6 +170,10 @@ def main():
     st.dataframe(
         portfolio[["ticker", "pd_merton_1y", "cva", "approx_rating"]],
         width="stretch", hide_index=True,
+        column_config={
+            "pd_merton_1y": st.column_config.NumberColumn("1y Merton PD", format="%.4f"),
+            "cva": st.column_config.NumberColumn("CVA", format="$%.2f"),
+        },
     )
     st.caption(
         "Ratings are illustrative (general knowledge, not a live agency pull -- see README "

@@ -31,7 +31,7 @@ hull_white:
 
 swap:
   notional: 10000000
-  fixed_rate: 0.039217  # par/at-the-money rate as of valuation_date, from the Hull-White-priced curve (value ~0 at inception)
+  fixed_rate: 0.04  # par/at-the-money rate as of valuation_date, from the Hull-White-priced curve (value ~0 at inception)
   tenor_years: 5
   payment_frequency: "semiannual"
   n_exposure_paths: 5000  # Phase 4/5: paths simulated for the exposure training dataset
